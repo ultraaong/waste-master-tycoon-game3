@@ -21,9 +21,8 @@
         let isAuthReady = false;
 
         // Game state variables that need to be globally accessible within this module
-        // and potentially exposed to the window object for other scripts.
-        let gameStarted = false; // Moved declaration here
-        // Other game state variables can remain in the second script if not needed by initFirebaseAndAuth
+        // and exposed to the window object for other scripts.
+        let gameStarted = false; 
 
         // Ensure __app_id and __firebase_config are defined by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -35,6 +34,10 @@
                 app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
+
+                // Expose db and auth to the window object immediately after initialization
+                window.db = db;
+                window.auth = auth;
 
                 // Listen for authentication state changes
                 onAuthStateChanged(auth, async (user) => {
@@ -52,21 +55,25 @@
                         }
                     }
                     isAuthReady = true;
+                    // Update global window variables after auth state is determined
+                    window.userId = userId;
+                    window.isAuthReady = isAuthReady;
+
                     // Update UI with userId after auth is ready
                     const userIdDisplay = document.getElementById('userIdDisplay');
                     if (userIdDisplay) {
                         userIdDisplay.textContent = userId || 'N/A';
                     }
                     // If game hasn't started, and auth is ready, enable start button
-                    // Access gameStarted from the module's scope
-                    if (!gameStarted && document.getElementById('startButton')) {
+                    // Access gameStarted from the module's scope (which is also exposed to window)
+                    if (!window.gameStarted && document.getElementById('startButton')) {
                         document.getElementById('startButton').disabled = false;
                         document.getElementById('playerNameInput').disabled = false;
                         document.getElementById('showScoresButton').disabled = false;
                     }
-                    // Refresh scores if on scoreboard screen
-                    if (!document.getElementById('scoreboardScreen').classList.contains('hidden')) {
-                        displayScores(); // displayScores needs to be global or passed
+                    // Refresh scores if on scoreboard screen, ensuring displayScores is available
+                    if (!document.getElementById('scoreboardScreen').classList.contains('hidden') && typeof window.displayScores === 'function') {
+                        window.displayScores(); 
                     }
                 });
 
@@ -80,25 +87,20 @@
 
             } catch (error) {
                 console.error("Firebase initialization failed:", error);
-                // Display error message to user if Firebase fails to initialize
-                // showMessageBox needs to be global or passed
-                if (typeof showMessageBox === 'function') {
-                    showMessageBox("เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล กรุณาลองใหม่อีกครั้ง", "error");
+                // Display error message to user if Firebase fails to initialize, ensuring showMessageBox is available
+                if (typeof window.showMessageBox === 'function') {
+                    window.showMessageBox("เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล กรุณาลองใหม่อีกครั้ง", "error");
                 }
             }
         }
 
         // Expose global variables and functions to the window object for other scripts
-        window.db = db;
-        window.auth = auth;
-        window.userId = userId;
-        window.isAuthReady = isAuthReady;
         window.initFirebaseAndAuth = initFirebaseAndAuth; // Expose init function
         window.appId = appId; // Expose appId
-        window.gameStarted = gameStarted; // Expose gameStarted
-        // Expose displayScores and showMessageBox if they are called in this module
-        window.displayScores = null; // Will be set by the second script
-        window.showMessageBox = null; // Will be set by the second script
+        window.gameStarted = gameStarted; // Expose gameStarted (initial value, will be updated by initFirebaseAndAuth)
+        // Expose displayScores and showMessageBox as null initially, will be set by the second script
+        window.displayScores = null; 
+        window.showMessageBox = null; 
     </script>
 
     <style>
@@ -461,10 +463,11 @@
 
         // Access global Firebase variables exposed by the script in the head
         // Ensure these are accessed from window as they are exposed there.
-        const db = window.db;
-        const auth = window.auth;
-        let userId = window.userId; // This will be updated by onAuthStateChanged in the head script
-        let isAuthReady = window.isAuthReady; // This will be updated by onAuthStateChanged in the head script
+        // These variables will be updated by the initFirebaseAndAuth function in the head script
+        let db = window.db; 
+        let auth = window.auth;
+        let userId = window.userId; 
+        let isAuthReady = window.isAuthReady; 
         const appId = window.appId;
         let gameStarted = window.gameStarted; // Access gameStarted from window
 
@@ -712,7 +715,7 @@
             roundDisplay.textContent = currentRound;
             moneyDisplay.textContent = `฿${money.toLocaleString()}`;
             efficiencyDisplay.textContent = `${efficiency}%`;
-            userIdDisplay.textContent = userId || 'กำลังโหลด...'; // Update userId display
+            userIdDisplay.textContent = window.userId || 'กำลังโหลด...'; // Update userId display from window
 
             for (const key in wastesStatus) {
                 if (wasteDisplayElements[key]) {
