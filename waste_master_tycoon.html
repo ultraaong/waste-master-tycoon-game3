@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Waste Master Tycoon: ผู้บริหารไร้ความสูญเปล่า</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase variables - these will be populated by the Canvas environment
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        // Game state variables that need to be globally accessible within this module
+        // and potentially exposed to the window object for other scripts.
+        let gameStarted = false; // Moved declaration here
+        // Other game state variables can remain in the second script if not needed by initFirebaseAndAuth
+
+        // Ensure __app_id and __firebase_config are defined by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        // Function to initialize Firebase and authenticate
+        async function initFirebaseAndAuth() {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Listen for authentication state changes
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("Firebase: User signed in:", userId);
+                    } else {
+                        // Sign in anonymously if no user is found
+                        try {
+                            await signInAnonymously(auth);
+                            userId = auth.currentUser.uid;
+                            console.log("Firebase: Signed in anonymously:", userId);
+                        } catch (error) {
+                            console.error("Firebase: Anonymous sign-in failed:", error);
+                        }
+                    }
+                    isAuthReady = true;
+                    // Update UI with userId after auth is ready
+                    const userIdDisplay = document.getElementById('userIdDisplay');
+                    if (userIdDisplay) {
+                        userIdDisplay.textContent = userId || 'N/A';
+                    }
+                    // If game hasn't started, and auth is ready, enable start button
+                    // Access gameStarted from the module's scope
+                    if (!gameStarted && document.getElementById('startButton')) {
+                        document.getElementById('startButton').disabled = false;
+                        document.getElementById('playerNameInput').disabled = false;
+                        document.getElementById('showScoresButton').disabled = false;
+                    }
+                    // Refresh scores if on scoreboard screen
+                    if (!document.getElementById('scoreboardScreen').classList.contains('hidden')) {
+                        displayScores(); // displayScores needs to be global or passed
+                    }
+                });
+
+                // Use custom token if available (provided by Canvas)
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    // Fallback to anonymous sign-in if no custom token
+                    await signInAnonymously(auth);
+                }
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                // Display error message to user if Firebase fails to initialize
+                // showMessageBox needs to be global or passed
+                if (typeof showMessageBox === 'function') {
+                    showMessageBox("เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล กรุณาลองใหม่อีกครั้ง", "error");
+                }
+            }
+        }
+
+        // Expose global variables and functions to the window object for other scripts
+        window.db = db;
+        window.auth = auth;
+        window.userId = userId;
+        window.isAuthReady = isAuthReady;
+        window.initFirebaseAndAuth = initFirebaseAndAuth; // Expose init function
+        window.appId = appId; // Expose appId
+        window.gameStarted = gameStarted; // Expose gameStarted
+        // Expose displayScores and showMessageBox if they are called in this module
+        window.displayScores = null; // Will be set by the second script
+        window.showMessageBox = null; // Will be set by the second script
+    </script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .game-container {
+            background-color: #ffffff;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            padding: 25px;
+            width: 100%;
+            max-width: 700px;
+            text-align: center;
+            position: relative;
+        }
+        .status-panel {
+            display: flex;
+            justify-content: space-around;
+            background-color: #e2e8f0;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .status-item {
+            margin: 5px 10px;
+            font-size: 1.1em;
+            font-weight: bold;
+            color: #333;
+        }
+        .waste-status-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr); /* 2 columns for smaller screens */
+            gap: 10px;
+            margin-top: 15px;
+        }
+        @media (min-width: 640px) { /* Tailwind's sm breakpoint */
+            .waste-status-grid {
+                grid-template-columns: repeat(4, 1fr); /* 4 columns for larger screens */
+            }
+        }
+        .waste-item {
+            background-color: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 8px;
+            font-size: 0.9em;
+        }
+        .scenario-box {
+            background-color: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            min-height: 150px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        .action-button {
+            background-color: #4299e1;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            margin: 8px;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            width: calc(100% - 16px);
+            max-width: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .action-button i {
+            margin-right: 8px;
+        }
+        .action-button:hover {
+            background-color: #3182ce;
+            transform: translateY(-2px);
+        }
+        .action-button:active {
+            transform: translateY(0);
+        }
+        .message-box {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: #333;
+            color: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+            max-width: 80%;
+            text-align: center;
+        }
+        .message-box.show {
+            opacity: 1;
+            visibility: visible;
+        }
+        .button-primary {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1.1em;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+        }
+        .button-primary:hover {
+            background-color: #45a049;
+            transform: translateY(-2px);
+        }
+        .button-primary:active {
+            transform: translateY(0);
+        }
+        .input-field {
+            padding: 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            width: 80%;
+            max-width: 300px;
+            margin-bottom: 20px;
+            font-size: 1em;
+        }
+        .scoreboard-list {
+            list-style: none;
+            padding: 0;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+        }
+        .scoreboard-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 15px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .scoreboard-item:last-child {
+            border-bottom: none;
+        }
+        .scoreboard-item:nth-child(odd) {
+            background-color: #f8fafc;
+        }
+        .scoreboard-item span {
+            font-weight: bold;
+        }
+        .scoreboard-item .name {
+            flex-grow: 1;
+            text-align: left;
+        }
+        .scoreboard-item .score {
+            width: 100px;
+            text-align: right;
+        }
+        .scoreboard-item .efficiency {
+            width: 80px;
+            text-align: right;
+        }
+        .hidden {
+            display: none;
+        }
+        .audio-control {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background-color: #cbd5e1;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            transition: background-color 0.3s ease;
+        }
+        .audio-control:hover {
+            background-color: #a0aec0;
+        }
+        .audio-control i {
+            color: #4a5568;
+            font-size: 1.2em;
+        }
+        .summary-list {
+            list-style: none;
+            padding: 0;
+            margin-top: 20px;
+            text-align: left;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            background-color: #f8fafc;
+        }
+        .summary-list li {
+            padding: 5px 0;
+            border-bottom: 1px dashed #e2e8f0;
+        }
+        .summary-list li:last-child {
+            border-bottom: none;
+        }
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            font-size: 1.5em;
+            color: #333;
+        }
+        .spinner {
+            border: 8px solid #f3f3f3;
+            border-top: 8px solid #4299e1;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <p>กำลังเชื่อมต่อฐานข้อมูล...</p>
+    </div>
+
+    <div class="game-container">
+        <h1 class="text-3xl font-bold text-gray-800 mb-4">Waste Master Tycoon</h1>
+        <p class="text-gray-600 mb-6" id="mainInstructions">
+            ผู้บริหารไร้ความสูญเปล่า: บริหารเงินทุนและลดความสูญเปล่าเพื่อเพิ่มประสิทธิภาพ!
+        </p>
+
+        <!-- Audio Control Button -->
+        <div id="audioControl" class="audio-control">
+            <i id="audioIcon" class="fas fa-volume-up"></i>
+        </div>
+        <audio id="backgroundMusic" loop>
+            <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" type="audio/mpeg">
+            Your browser does not support the audio element.
+        </audio>
+
+        <!-- Start Screen -->
+        <div id="startScreen" class="">
+            <input type="text" id="playerNameInput" class="input-field" placeholder="กรอกชื่อผู้เล่น/ทีม" disabled>
+            <p class="text-gray-700 mb-2 text-sm">
+                <b>พัฒนาโดย:</b> อาจารย์เปมิกา แซ่เตียว<br>
+                หลักสูตรเทคโนโลยีบัณฑิต วิชาเอกเทคโนโลยีอุตสาหการและการผลิต NSTRU
+            </p>
+            <p class="text-gray-700 mb-4 text-sm">
+                <b>เป้าหมายของเกม:</b> เพิ่มประสิทธิภาพการทำงานและเงินทุนให้สูงที่สุด พร้อมทั้งลดระดับความสูญเปล่าแต่ละประเภทให้ต่ำที่สุดเมื่อจบรอบที่ 10!
+                <br>
+                <b>ผู้ชนะ:</b> ผู้ที่มีคะแนนรวมสูงสุด (เงินทุน + (ประสิทธิภาพ x 100) - (ผลรวมความสูญเปล่า x 10))
+            </p>
+            <button id="startButton" class="button-primary mb-4" disabled>เริ่มเกม</button>
+            <button id="showScoresButton" class="button-primary bg-gray-500 hover:bg-gray-600" disabled>ดูคะแนนสูงสุด</button>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="gameScreen" class="hidden">
+            <div class="status-panel">
+                <div class="status-item">รอบ: <span id="roundDisplay">1</span>/<span id="maxRoundsDisplay">10</span></div>
+                <div class="status-item">เงินทุน: <span id="moneyDisplay">฿10,000</span></div>
+                <div class="status-item">ประสิทธิภาพ: <span id="efficiencyDisplay">50%</span></div>
+                <div class="status-item">รหัสผู้ใช้: <span id="userIdDisplay">กำลังโหลด...</span></div>
+                <div class="waste-status-grid w-full">
+                    <div class="waste-item">ผลิตเกิน: <span id="wasteOverproduction">0</span></div>
+                    <div class="waste-item">รอคอย: <span id="wasteWaiting">0</span></div>
+                    <div class="waste-item">ขนส่ง: <span id="wasteTransportation">0</span></div>
+                    <div class="waste-item">กระบวนการเกิน: <span id="wasteExtraProcessing">0</span></div>
+                    <div class="waste-item">เคลื่อนไหว: <span id="wasteMotion">0</span></div>
+                    <div class="waste-item">สต็อก: <span id="wasteInventory">0</span></div>
+                    <div class="waste-item">ของเสีย: <span id="wasteDefects">0</span></div>
+                    <div class="waste-item">ไม่ใช้ศักยภาพ: <span id="wasteUnusedTalent">0</span></div>
+                </div>
+            </div>
+
+            <div class="scenario-box">
+                <p class="text-xl font-semibold text-gray-700 mb-4" id="scenarioText">
+                    เริ่มต้นการบริหารของคุณ!
+                </p>
+                <div id="actionButtons" class="flex flex-col items-center w-full">
+                    <!-- Action buttons will be dynamically added here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Summary Screen -->
+        <div id="summaryScreen" class="hidden">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">สรุปผลการบริหารความสูญเปล่า</h2>
+            <ul id="finalWasteSummaryList" class="summary-list">
+                <!-- Final waste status will be dynamically added here -->
+            </ul>
+            <p class="text-lg font-semibold mt-4">เงินทุนสุดท้าย: <span id="summaryMoney"></span></p>
+            <p class="text-lg font-semibold">ประสิทธิภาพการทำงาน: <span id="summaryEfficiency"></span></p>
+            <p class="text-lg font-semibold">ผลรวมความสูญเปล่า: <span id="summaryTotalWasteValue"></span> หน่วย</p>
+            <p class="text-lg font-semibold mb-4">คะแนนรวม: <span id="summaryTotalScore"></span></p>
+            <button id="showScoresFromSummaryButton" class="button-primary mt-6">ดูคะแนนสูงสุด</button>
+        </div>
+
+        <!-- Scoreboard Screen -->
+        <div id="scoreboardScreen" class="hidden">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">กระดานคะแนนสูงสุด</h2>
+            <ul id="highScoresList" class="scoreboard-list">
+                <li class="scoreboard-item font-bold">
+                    <span class="name">ชื่อผู้เล่น</span>
+                    <span class="score">คะแนนรวม</span>
+                    <span class="efficiency">ประสิทธิภาพ</span>
+                </li>
+                <!-- Scores will be dynamically added here -->
+            </ul>
+            <button id="backToStartButton" class="button-primary mt-6">กลับหน้าแรก</button>
+        </div>
+
+        <button id="resetButton" class="button-primary mt-4 hidden">เล่นใหม่</button>
+    </div>
+
+    <!-- Custom Message Box -->
+    <div id="messageBox" class="message-box">
+        <p id="messageText" class="text-lg font-semibold mb-3"></p>
+        <button id="messageBoxClose" class="button-primary">เข้าใจแล้ว</button>
+    </div>
+
+    <script type="module">
+        // Import Firebase modules (already imported in head, but useful for clarity here)
+        import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Access global Firebase variables exposed by the script in the head
+        // Ensure these are accessed from window as they are exposed there.
+        const db = window.db;
+        const auth = window.auth;
+        let userId = window.userId; // This will be updated by onAuthStateChanged in the head script
+        let isAuthReady = window.isAuthReady; // This will be updated by onAuthStateChanged in the head script
+        const appId = window.appId;
+        let gameStarted = window.gameStarted; // Access gameStarted from window
+
+        // Game state variables
+        let currentPlayerName = "ผู้เล่นไม่ระบุชื่อ";
+        let currentRound = 0;
+        const maxRounds = 10;
+        let money = 0;
+        let efficiency = 0; // Percentage
+        let wastesStatus = {}; // Object to store current waste levels
+        let shuffledScenarios = []; // To store scenarios in a random, non-repeating order
+        let messageBoxCallback = null; // Callback for message box close
+
+        // DOM Elements
+        const playerNameInput = document.getElementById('playerNameInput');
+        const startButton = document.getElementById('startButton');
+        const showScoresButton = document.getElementById('showScoresButton');
+        const backToStartButton = document.getElementById('backToStartButton');
+        const resetButton = document.getElementById('resetButton');
+
+        const startScreen = document.getElementById('startScreen');
+        const gameScreen = document.getElementById('gameScreen');
+        const summaryScreen = document.getElementById('summaryScreen');
+        const scoreboardScreen = document.getElementById('scoreboardScreen');
+        const loadingOverlay = document.getElementById('loadingOverlay'); // Loading overlay
+
+        const roundDisplay = document.getElementById('roundDisplay');
+        const maxRoundsDisplay = document.getElementById('maxRoundsDisplay');
+        const moneyDisplay = document.getElementById('moneyDisplay');
+        const efficiencyDisplay = document.getElementById('efficiencyDisplay');
+        const userIdDisplay = document.getElementById('userIdDisplay'); // New user ID display
+        const scenarioText = document.getElementById('scenarioText');
+        const actionButtonsContainer = document.getElementById('actionButtons');
+        const highScoresList = document.getElementById('highScoresList');
+
+        const messageBox = document.getElementById('messageBox');
+        const messageText = document.getElementById('messageText');
+        const messageBoxClose = document.getElementById('messageBoxClose');
+
+        const finalWasteSummaryList = document.getElementById('finalWasteSummaryList');
+        const summaryMoney = document.getElementById('summaryMoney');
+        const summaryEfficiency = document.getElementById('summaryEfficiency');
+        const summaryTotalWasteValue = document.getElementById('summaryTotalWasteValue');
+        const summaryTotalScore = document.getElementById('summaryTotalScore');
+        const showScoresFromSummaryButton = document.getElementById('showScoresFromSummaryButton');
+
+        // Audio elements
+        const backgroundMusic = document.getElementById('backgroundMusic');
+        const audioControl = document.getElementById('audioControl');
+        const audioIcon = document.getElementById('audioIcon');
+
+        // Define the 8 Wastes with their Thai names and descriptions
+        const wastes = {
+            overproduction: { name: "ผลิตเกิน", description: "การผลิตสินค้าหรือบริการเกินความต้องการ ทำให้เกิดสินค้าคงคลังและค่าใช้จ่ายที่ไม่จำเป็น" },
+            waiting: { name: "รอคอย", description: "การที่คนหรือชิ้นงานต้องรอในแต่ละขั้นตอน ทำให้เสียเวลาและประสิทธิภาพ" },
+            transportation: { name: "ขนส่ง", description: "การเคลื่อนย้ายสินค้าหรือวัตถุดิบที่ไม่จำเป็น ทำให้เกิดค่าใช้จ่ายและเสียเวลา" },
+            extraProcessing: { name: "กระบวนการเกิน", description: "การทำงานที่ไม่จำเป็นหรือซ้ำซ้อนในกระบวนการผลิต" },
+            motion: { name: "เคลื่อนไหว", description: "การเคลื่อนไหวของคนหรือเครื่องจักรที่ไม่จำเป็น ทำให้เสียเวลาและพลังงาน" },
+            inventory: { name: "สต็อก", description: "การสะสมสินค้าสำเร็จรูปหรือวัตถุดิบเกินจำเป็น ทำให้เสียค่าใช้จ่ายในการจัดเก็บ" },
+            defects: { name: "ของเสีย", description: "การผลิตสินค้าที่ไม่ได้มาตรฐานหรือมีข้อผิดพลาด ทำให้ต้องแก้ไขและเสียโอกาส" },
+            unusedTalent: { name: "ไม่ใช้ศักยภาพ", description: "การไม่ใช้ศักยภาพของพนักงานอย่างเต็มที่ ทำให้เสียโอกาสในการพัฒนาและลดประสิทธิภาพ" }
+        };
+
+        // Scenarios and their associated actions and effects
+        const allScenarios = [
+            {
+                text: "คลังสินค้าเต็มไปด้วยสินค้าที่ผลิตเกินความต้องการ ทำให้สิ้นเปลืองพื้นที่จัดเก็บและค่าใช้จ่าย",
+                wasteImpact: { overproduction: 15, inventory: 5 },
+                actions: [
+                    { text: "ปรับลดกำลังการผลิตให้ตรงกับยอดสั่งซื้อ", cost: 0, effect: { efficiency: +10, money: +2500, overproduction: -30, inventory: -15 }, outcome: "ลดการผลิตเกินได้สำเร็จ และได้เงินคืนจากการขายสต็อกเก่า! (ประสิทธิภาพ +10%)", icon: "fas fa-chart-line" },
+                    { text: "ลงทุนในระบบพยากรณ์ความต้องการขั้นสูง", cost: 4000, effect: { efficiency: +20, money: -4000, overproduction: -40, inventory: -20 }, outcome: "การพยากรณ์แม่นยำขึ้นมาก ลดความเสี่ยงการผลิตเกิน! (ประสิทธิภาพ +20%)", icon: "fas fa-brain" }
+                ]
+            },
+            {
+                text: "พนักงานหลายคนกำลังยืนรอวัตถุดิบ ทำให้เสียเวลาการผลิตอย่างมากและกำลังใจลดลง",
+                wasteImpact: { waiting: 15, efficiency: -5 },
+                actions: [
+                    { text: "ลงทุนระบบจัดส่งวัตถุดิบอัตโนมัติ", cost: 5000, effect: { efficiency: +25, money: -5000, waiting: -40 }, outcome: "ลดเวลาการรอคอยได้มาก! ประสิทธิภาพพุ่งสูงขึ้น! (ประสิทธิภาพ +25%)", icon: "fas fa-robot" },
+                    { text: "จัดตารางการส่งวัตถุดิบใหม่และสื่อสารให้ชัดเจน", cost: 1000, effect: { efficiency: +10, money: -1000, waiting: -20 }, outcome: "ช่วยลดการรอคอยได้บ้าง แต่ยังไม่สมบูรณ์ (ประสิทธิภาพ +10%)", icon: "fas fa-calendar-alt" }
+                ]
+            },
+            {
+                text: "การขนส่งวัตถุดิบระหว่างแผนกใช้เวลานานและมีโอกาสเสียหายระหว่างทางบ่อยครั้ง",
+                wasteImpact: { transportation: 15, defects: 5 },
+                actions: [
+                    { text: "ปรับปรุงเส้นทางการขนส่งและอุปกรณ์ให้ทันสมัย", cost: 3000, effect: { efficiency: +15, money: -3000, transportation: -30, defects: -10 }, outcome: "การขนส่งมีประสิทธิภาพมากขึ้น! ลดความเสียหาย (ประสิทธิภาพ +15%)", icon: "fas fa-route" },
+                    { text: "จัดตั้งจุดรับ-ส่งวัตถุดิบกลางและกำหนดเวลา", cost: 1500, effect: { efficiency: +10, money: -1500, transportation: -15 }, outcome: "ช่วยลดระยะทางและเวลาขนส่งได้บางส่วน (ประสิทธิภาพ +10%)", icon: "fas fa-map-marker-alt" }
+                ]
+            },
+            {
+                text: "มีขั้นตอนการอนุมัติที่ซ้ำซ้อนหลายชั้น ทำให้งานล่าช้าและสับสน พนักงานเริ่มบ่น",
+                wasteImpact: { extraProcessing: 15, efficiency: -5 },
+                actions: [
+                    { text: "ปรับปรุงกระบวนการอนุมัติให้กระชับและลดขั้นตอนที่ไม่จำเป็น", cost: 1500, effect: { efficiency: +20, money: -1500, extraProcessing: -35 }, outcome: "กระบวนการทำงานรวดเร็วขึ้น! ลดความซับซ้อนอย่างมาก (ประสิทธิภาพ +20%)", icon: "fas fa-stream" },
+                    { text: "นำระบบ E-Signature และ Workflow Automation มาใช้", cost: 2500, effect: { efficiency: +25, money: -2500, extraProcessing: -40 }, outcome: "งานอนุมัติเป็นไปอย่างราบรื่นและรวดเร็ว! (ประสิทธิภาพ +25%)", icon: "fas fa-file-signature" }
+                ]
+            },
+            {
+                text: "พนักงานต้องเดินไปหยิบเครื่องมือที่อยู่ไกลบ่อยครั้ง ทำให้เสียเวลาและพลังงานสะสม",
+                wasteImpact: { motion: 15, efficiency: -3 },
+                actions: [
+                    { text: "จัดวางเครื่องมือให้ใกล้มือพนักงานและจัดระเบียบพื้นที่", cost: 500, effect: { efficiency: +10, money: -500, motion: -25 }, outcome: "การเคลื่อนไหวลดลงอย่างเห็นได้ชัด พนักงานทำงานคล่องตัวขึ้น (ประสิทธิภาพ +10%)", icon: "fas fa-toolbox" },
+                    { text: "ออกแบบพื้นที่ทำงานใหม่ตามหลัก Ergonomics และ 5ส", cost: 2000, effect: { efficiency: +20, money: -2000, motion: -35 }, outcome: "สภาพแวดล้อมการทำงานดีขึ้น ลดการเคลื่อนไหวที่ไม่จำเป็น (ประสิทธิภาพ +20%)", icon: "fas fa-chair" }
+                ]
+            },
+            {
+                text: "มีสต็อกวัตถุดิบและสินค้ากึ่งสำเร็จรูปจำนวนมากเกินจำเป็น ทำให้สิ้นเปลืองค่าใช้จ่ายในการจัดเก็บและเสี่ยงต่อการล้าสมัย",
+                wasteImpact: { inventory: 15, money: -1000 },
+                actions: [
+                    { text: "นำระบบ Just-In-Time (JIT) มาใช้และปรับปรุงซัพพลายเชน", cost: 4000, effect: { efficiency: +25, money: -4000, inventory: -45 }, outcome: "ลดสต็อกได้มหาศาล! ประหยัดค่าใช้จ่ายและลดความเสี่ยง (ประสิทธิภาพ +25%)", icon: "fas fa-truck-loading" },
+                    { text: "ประเมินและลดปริมาณการสั่งซื้อแต่ละครั้งอย่างเข้มงวด", cost: 0, effect: { efficiency: +10, money: +1000, inventory: -20 }, outcome: "ช่วยลดสต็อกได้บ้าง และได้เงินคืนจากการจัดการ (ประสิทธิภาพ +10%)", icon: "fas fa-boxes" }
+                ]
+            },
+            {
+                text: "สินค้าที่ผลิตออกมามีของเสียสูง ต้องนำไปแก้ไขจำนวนมาก สร้างความเสียหายต่อแบรนด์และค่าใช้จ่ายซ้ำซ้อน",
+                wasteImpact: { defects: 15, money: -500 },
+                actions: [
+                    { text: "จัดอบรมพนักงานเรื่องคุณภาพและเทคนิคการผลิตอย่างเข้มข้น", cost: 2000, effect: { efficiency: +15, money: -2000, defects: -30 }, outcome: "คุณภาพสินค้าดีขึ้นอย่างเห็นได้ชัด! ของเสียลดลง (ประสิทธิภาพ +15%)", icon: "fas fa-chalkboard-teacher" },
+                    { text: "ติดตั้งระบบตรวจสอบคุณภาพอัตโนมัติและ AI Vision", cost: 7000, effect: { efficiency: +30, money: -7000, defects: -50 }, outcome: "ของเสียลดลงอย่างมาก! การลงทุนที่คุ้มค่าและแม่นยำ (ประสิทธิภาพ +30%)", icon: "fas fa-microscope" }
+                ]
+            },
+            {
+                text: "พนักงานที่มีความสามารถพิเศษไม่ได้รับมอบหมายงานที่ท้าทาย ทำให้ขาดแรงจูงใจและไม่เติบโต อาจลาออกได้",
+                wasteImpact: { unusedTalent: 15, efficiency: -5 },
+                actions: [
+                    { text: "จัดโปรแกรมพัฒนาศักยภาพและมอบหมายงานที่เหมาะสม", cost: 2500, effect: { efficiency: +20, money: -2500, unusedTalent: -40 }, outcome: "พนักงานมีขวัญกำลังใจและประสิทธิภาพเพิ่มขึ้นอย่างมาก! (ประสิทธิภาพ +20%)", icon: "fas fa-graduation-cap" },
+                    { text: "สร้างระบบข้อเสนอแนะและนวัตกรรมจากพนักงาน", cost: 1000, effect: { efficiency: +10, money: -1000, unusedTalent: -20 }, outcome: "เปิดโอกาสให้พนักงานได้แสดงศักยภาพและสร้างสรรค์ (ประสิทธิภาพ +10%)", icon: "fas fa-lightbulb" }
+                ]
+            },
+            {
+                text: "ตลาดมีการเปลี่ยนแปลงอย่างรวดเร็ว ทำให้การวางแผนการผลิตและการขายยากขึ้น",
+                wasteImpact: { overproduction: 5, inventory: 5, waiting: 5 }, // General impact
+                actions: [
+                    { text: "ลงทุนในการวิเคราะห์ข้อมูลตลาดเชิงลึกและ Big Data", cost: 3000, effect: { efficiency: +15, money: -3000, overproduction: -10, inventory: -10 }, outcome: "เข้าใจตลาดดีขึ้น ลดความเสี่ยงจากการเปลี่ยนแปลง (ประสิทธิภาพ +15%)", icon: "fas fa-chart-pie" },
+                    { text: "เพิ่มความยืดหยุ่นในสายการผลิตและปรับตัวให้เร็วขึ้น", cost: 2000, effect: { efficiency: +10, money: -2000, waiting: -5, transportation: -5 }, outcome: "สามารถปรับตัวตามความต้องการตลาดได้ดีขึ้น (ประสิทธิภาพ +10%)", icon: "fas fa-wrench" }
+                ]
+            },
+            {
+                text: "มีปัญหาการสื่อสารภายในองค์กร ทำให้เกิดความเข้าใจผิดและงานซ้ำซ้อน",
+                wasteImpact: { extraProcessing: 5, waiting: 5, motion: 5 },
+                actions: [
+                    { text: "จัดอบรมการสื่อสารและใช้แพลตฟอร์มสื่อสารภายใน", cost: 1500, effect: { efficiency: +10, money: -1500, extraProcessing: -10, waiting: -10 }, outcome: "การสื่อสารราบรื่นขึ้น ลดความผิดพลาด (ประสิทธิภาพ +10%)", icon: "fas fa-comments" },
+                    { text: "กำหนดบทบาทและหน้าที่ให้ชัดเจนยิ่งขึ้น", cost: 500, effect: { efficiency: +5, money: -500, extraProcessing: -5 }, outcome: "ลดความสับสนในการทำงาน (ประสิทธิภาพ +5%)", icon: "fas fa-user-tie" }
+                ]
+            },
+            // --- New Scenarios Added Here ---
+            {
+                text: "ซัพพลายเออร์เสนอส่วนลดจำนวนมากสำหรับวัตถุดิบ หากซื้อในปริมาณที่สูงขึ้น แต่จะทำให้มีสินค้าคงคลังเพิ่มขึ้นอย่างมาก",
+                wasteImpact: { inventory: 10 },
+                actions: [
+                    { text: "รับข้อเสนอส่วนลดและเพิ่มสต็อก", cost: 0, effect: { efficiency: -5, money: +3000, inventory: +20 }, outcome: "ได้ส่วนลดจำนวนมาก แต่คลังสินค้าเริ่มแน่นและประสิทธิภาพลดลงเล็กน้อย (ประสิทธิภาพ -5%)", icon: "fas fa-dollar-sign" },
+                    { text: "ปฏิเสธข้อเสนอและรักษาระดับสต็อกปัจจุบัน", cost: 0, effect: { efficiency: +5, money: -500, inventory: -5 }, outcome: "พลาดโอกาสส่วนลด แต่รักษาสภาพคล่องและประสิทธิภาพการจัดการสต็อกได้ดี (ประสิทธิภาพ +5%)", icon: "fas fa-box-open" }
+                ]
+            },
+            {
+                text: "เครื่องจักรหลักเสียกะทันหัน ทำให้สายการผลิตหยุดชะงักและพนักงานต้องรอ",
+                wasteImpact: { waiting: 20, defects: 5, efficiency: -10 },
+                actions: [
+                    { text: "เรียกช่างซ่อมภายนอกที่มีค่าใช้จ่ายสูง แต่ซ่อมได้รวดเร็ว", cost: 6000, effect: { efficiency: +15, money: -6000, waiting: -30 }, outcome: "เครื่องจักรกลับมาทำงานได้เร็ว ลดเวลาการรอคอยได้มาก (ประสิทธิภาพ +15%)", icon: "fas fa-tools" },
+                    { text: "ให้พนักงานในทีมพยายามซ่อมเอง (ใช้เวลานานกว่า แต่ประหยัด)", cost: 1000, effect: { efficiency: +5, money: -1000, waiting: -10, unusedTalent: -5 }, outcome: "ประหยัดค่าใช้จ่ายได้ แต่ต้องใช้เวลามากขึ้นในการซ่อมและพนักงานบางคนได้เรียนรู้ทักษะใหม่ (ประสิทธิภาพ +5%)", icon: "fas fa-wrench" }
+                ]
+            },
+            {
+                text: "มีโอกาสใช้เส้นทางการขนส่งใหม่ที่เร็วกว่าเดิม แต่ถนนไม่ดี อาจทำให้สินค้าเสียหายได้",
+                wasteImpact: { transportation: 5, defects: 5 },
+                actions: [
+                    { text: "ใช้เส้นทางใหม่และลงทุนในบรรจุภัณฑ์ที่แข็งแรงขึ้น", cost: 2000, effect: { efficiency: +10, money: -2000, transportation: -20, defects: -10 }, outcome: "การขนส่งรวดเร็วขึ้นและสินค้าปลอดภัย! ประสิทธิภาพโดยรวมดีขึ้น (ประสิทธิภาพ +10%)", icon: "fas fa-box" },
+                    { text: "รักษาสายการขนส่งเดิมที่ปลอดภัยแต่ช้ากว่า", cost: 0, effect: { efficiency: -2, transportation: +5 }, outcome: "ปลอดภัยไว้ก่อน แต่ยังคงเสียเวลาในการขนส่งเหมือนเดิม (ประสิทธิภาพ -2%)", icon: "fas fa-road" }
+                ]
+            },
+            {
+                text: "ฝ่ายบริหารต้องการรายงานข้อมูลที่ซับซ้อนและใช้เวลานานในการจัดทำ ทำให้พนักงานต้องทำงานล่วงเวลา",
+                wasteImpact: { extraProcessing: 15, unusedTalent: 5, efficiency: -5 },
+                actions: [
+                    { text: "ลงทุนในซอฟต์แวร์ Business Intelligence เพื่อสร้างรายงานอัตโนมัติ", cost: 5000, effect: { efficiency: +25, money: -5000, extraProcessing: -40, unusedTalent: -10 }, outcome: "รายงานถูกสร้างอย่างรวดเร็วและแม่นยำ พนักงานมีเวลาไปทำงานสำคัญอื่น (ประสิทธิภาพ +25%)", icon: "fas fa-chart-bar" },
+                    { text: "จัดอบรมพนักงานให้ใช้โปรแกรมสเปรดชีตขั้นสูงเพื่อลดเวลา", cost: 1000, effect: { efficiency: +10, money: -1000, extraProcessing: -15 }, outcome: "ช่วยลดเวลาการจัดทำรายงานได้บ้าง พนักงานมีทักษะเพิ่มขึ้น (ประสิทธิภาพ +10%)", icon: "fas fa-file-excel" }
+                ]
+            },
+            {
+                text: "พื้นที่ทำงานของพนักงานไม่เป็นระเบียบ ทำให้ต้องเสียเวลาในการค้นหาสิ่งของและเคลื่อนไหวที่ไม่จำเป็น",
+                wasteImpact: { motion: 15, waiting: 5 },
+                actions: [
+                    { text: "จัดโครงการ 5ส (สะสาง สะดวก สะอาด สุขลักษณะ สร้างนิสัย) ทั่วทั้งองค์กร", cost: 1500, effect: { efficiency: +15, money: -1500, motion: -30, waiting: -10 }, outcome: "พื้นที่ทำงานเป็นระเบียบขึ้นมาก พนักงานทำงานได้คล่องตัวและมีประสิทธิภาพ (ประสิทธิภาพ +15%)", icon: "fas fa-boxes-packing" },
+                    { text: "จัดหาชั้นวางและอุปกรณ์จัดเก็บเพิ่มเติม", cost: 500, effect: { efficiency: +0, money: -500, motion: -10 }, outcome: "ช่วยจัดเก็บของได้ดีขึ้น แต่ยังต้องปรับปรุงการจัดวาง (ประสิทธิภาพ +0%)", icon: "fas fa-shelves" }
+                ]
+            },
+            {
+                text: "ลูกค้าหลายรายร้องเรียนเกี่ยวกับคุณภาพสินค้าที่ได้รับ ทำให้เสียชื่อเสียงและอาจเสียลูกค้าในระยะยาว",
+                wasteImpact: { defects: 20, money: -1000, efficiency: -5 },
+                actions: [
+                    { text: "เสนอคืนเงินเต็มจำนวนและส่งสินค้าใหม่ให้ลูกค้าทันที", cost: 3000, effect: { efficiency: +5, money: -3000, defects: -15 }, outcome: "ลูกค้าพึงพอใจและกลับมาใช้บริการอีกครั้ง! แต่เสียเงินไปมาก (ประสิทธิภาพ +5%)", icon: "fas fa-hand-holding-dollar" },
+                    { text: "ตรวจสอบสาเหตุของข้อบกพร่องอย่างละเอียดและปรับปรุงกระบวนการผลิต", cost: 2000, effect: { efficiency: +20, money: -2000, defects: -30 }, outcome: "พบต้นตอของปัญหาและแก้ไขได้สำเร็จ คุณภาพสินค้าดีขึ้นอย่างยั่งยืน (ประสิทธิภาพ +20%)", icon: "fas fa-magnifying-glass" }
+                ]
+            },
+            {
+                text: "พนักงานที่มีศักยภาพสูงคนหนึ่งร้องขอการฝึกอบรมเพิ่มเติมในทักษะที่สำคัญ แต่มีค่าใช้จ่ายสูงและต้องหยุดงานชั่วคราว",
+                wasteImpact: { unusedTalent: 10, efficiency: -3 },
+                actions: [
+                    { text: "อนุมัติการฝึกอบรมและสนับสนุนอย่างเต็มที่", cost: 4000, effect: { efficiency: +20, money: -4000, unusedTalent: -30 }, outcome: "พนักงานมีความรู้และทักษะเพิ่มขึ้นอย่างมาก นำมาซึ่งประสิทธิภาพที่ยั่งยืน (ประสิทธิภาพ +20%)", icon: "fas fa-award" },
+                    { text: "ปฏิเสธการฝึกอบรมเนื่องจากข้อจำกัดด้านงบประมาณ", cost: 0, effect: { efficiency: -5, unusedTalent: +10 }, outcome: "ประหยัดงบประมาณได้ แต่พนักงานอาจขาดแรงจูงใจและไม่สามารถพัฒนาศักยภาพได้เต็มที่ (ประสิทธิภาพ -5%)", icon: "fas fa-ban" }
+                ]
+            }
+        ];
+
+        // Initialize waste status displays
+        const wasteDisplayElements = {};
+        for (const key in wastes) {
+            wasteDisplayElements[key] = document.getElementById(`waste${key.charAt(0).toUpperCase() + key.slice(1)}`);
+        }
+
+        // Function to show a custom message box
+        function showMessageBox(message, type = 'info', callback = null) {
+            messageText.innerHTML = message; // Use innerHTML for rich content
+            messageBox.className = 'message-box show';
+            messageBoxCallback = callback; // Store the callback
+            // Disable action buttons while message box is open
+            Array.from(actionButtonsContainer.children).forEach(button => button.disabled = true);
+            
+            if (type === 'error') {
+                messageBox.style.backgroundColor = '#dc3545'; // Red for error
+            } else {
+                messageBox.style.backgroundColor = '#333'; // Default dark
+            }
+        }
+        // Expose showMessageBox to window for the head script to use
+        window.showMessageBox = showMessageBox;
+
+        // Function to hide the custom message box
+        function hideMessageBox() {
+            messageBox.className = 'message-box';
+            // Re-enable action buttons after message box is closed
+            Array.from(actionButtonsContainer.children).forEach(button => button.disabled = false);
+
+            if (messageBoxCallback) {
+                messageBoxCallback(); // Execute callback if it exists
+                messageBoxCallback = null; // Clear the callback
+            }
+        }
+
+        // Event listener for closing the message box
+        messageBoxClose.addEventListener('click', hideMessageBox);
+
+        // Update game status display
+        function updateStatus() {
+            roundDisplay.textContent = currentRound;
+            moneyDisplay.textContent = `฿${money.toLocaleString()}`;
+            efficiencyDisplay.textContent = `${efficiency}%`;
+            userIdDisplay.textContent = userId || 'กำลังโหลด...'; // Update userId display
+
+            for (const key in wastesStatus) {
+                if (wasteDisplayElements[key]) {
+                    wasteDisplayElements[key].textContent = wastesStatus[key];
+                }
+            }
+        }
+
+        // Save scores to Firestore
+        async function saveScores(player, finalMoney, finalEfficiency, finalWastes) {
+            // Ensure db and userId are available from the global window object
+            const currentDb = window.db;
+            const currentUserId = window.userId;
+
+            if (!currentDb || !currentUserId) {
+                console.error("Firestore or User ID not ready. Cannot save score.");
+                showMessageBox("ไม่สามารถบันทึกคะแนนได้: การเชื่อมต่อฐานข้อมูลไม่พร้อม", "error");
+                return;
+            }
+
+            try {
+                // Calculate score: money + (efficiency * 100) - (sum of all wastes * 10)
+                let totalWasteValue = Object.values(finalWastes).reduce((sum, current) => sum + current, 0);
+                const totalScore = finalMoney + (finalEfficiency * 100) - (totalWasteValue * 10);
+                
+                const scoresCollectionRef = collection(currentDb, `artifacts/${appId}/public/data/wasteMasterTycoonScores`);
+                await addDoc(scoresCollectionRef, {
+                    name: player,
+                    score: totalScore,
+                    money: finalMoney,
+                    efficiency: finalEfficiency,
+                    wastes: finalWastes,
+                    userId: currentUserId, // Store the user ID
+                    date: new Date().toISOString() // Use ISO string for consistent sorting/display
+                });
+                console.log("Score saved successfully to Firestore!");
+                return totalScore;
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                showMessageBox("เกิดข้อผิดพลาดในการบันทึกคะแนน: " + e.message, "error");
+                return 0;
+            }
+        }
+
+        // Load and display scores from Firestore
+        function displayScores() {
+            // Ensure db and isAuthReady are available from the global window object
+            const currentDb = window.db;
+            const currentIsAuthReady = window.isAuthReady;
+
+            if (!currentDb || !currentIsAuthReady) {
+                console.log("Firestore or Auth not ready for displaying scores.");
+                highScoresList.innerHTML = `<li class="scoreboard-item"><span class="name">กำลังโหลดคะแนน...</span></li>`;
+                return;
+            }
+
+            highScoresList.innerHTML = `
+                <li class="scoreboard-item font-bold">
+                    <span class="name">ชื่อผู้เล่น</span>
+                    <span class="score">คะแนนรวม</span>
+                    <span class="efficiency">ประสิทธิภาพ</span>
+                </li>
+            `;
+            const scoresCollectionRef = collection(currentDb, `artifacts/${appId}/public/data/wasteMasterTycoonScores`);
+            // Use onSnapshot for real-time updates
+            onSnapshot(scoresCollectionRef, (snapshot) => {
+                const scores = [];
+                snapshot.forEach(doc => {
+                    scores.push(doc.data());
+                });
+                // Sort scores in memory to avoid Firestore index issues with orderBy
+                scores.sort((a, b) => b.score - a.score); 
+
+                highScoresList.innerHTML = `
+                    <li class="scoreboard-item font-bold">
+                        <span class="name">ชื่อผู้เล่น</span>
+                        <span class="score">คะแนนรวม</span>
+                        <span class="efficiency">ประสิทธิภาพ</span>
+                    </li>
+                `; // Clear and re-add header
+                scores.forEach((s, index) => {
+                    const li = document.createElement('li');
+                    li.classList.add('scoreboard-item');
+                    // Ensure userId is displayed completely for multi-user apps
+                    const displayUserId = s.userId ? s.userId : 'N/A'; 
+                    li.innerHTML = `
+                        <span class="name">${index + 1}. ${s.name} (${displayUserId})</span>
+                        <span class="score">฿${(typeof s.score === 'number' ? s.score : 0).toLocaleString()}</span>
+                        <span class="efficiency">${(typeof s.efficiency === 'number' ? s.efficiency : 0)}%</span>
+                    `;
+                    highScoresList.appendChild(li);
+                });
+            }, (error) => {
+                console.error("Error fetching scores:", error);
+                showMessageBox("เกิดข้อผิดพลาดในการดึงคะแนน: " + error.message, "error");
+            });
+        }
+        // Expose displayScores to window for the head script to use
+        window.displayScores = displayScores;
+
+
+        // Show summary screen before scoreboard
+        function showSummaryScreen() {
+            hideAllScreens();
+            summaryScreen.classList.remove('hidden');
+
+            finalWasteSummaryList.innerHTML = ''; // Clear previous summary
+            let totalWasteValue = 0;
+            for (const key in wastesStatus) {
+                const li = document.createElement('li');
+                li.textContent = `${wastes[key].name}: ${wastesStatus[key]} หน่วย`;
+                finalWasteSummaryList.appendChild(li);
+                totalWasteValue += wastesStatus[key];
+            }
+
+            summaryMoney.textContent = `฿${money.toLocaleString()}`;
+            summaryEfficiency.textContent = `${efficiency}%`;
+            summaryTotalWasteValue.textContent = `${totalWasteValue}`; // Display total waste value
+            const calculatedScore = money + (efficiency * 100) - (totalWasteValue * 10);
+            summaryTotalScore.textContent = `฿${calculatedScore.toLocaleString()}`;
+        }
+
+        // End game function
+        async function endGame() {
+            window.gameStarted = false; // Update the global gameStarted
+            actionButtonsContainer.innerHTML = ''; // Clear action buttons
+            scenarioText.textContent = "เกมจบแล้ว!";
+
+            await saveScores(currentPlayerName, money, efficiency, wastesStatus); // Save current player's score
+
+            let finalMessage = `
+                <h3 class="text-2xl font-bold mb-3">ผลสรุปการบริหารของคุณ!</h3>
+                <p class="text-lg mb-2">เงินทุนสุดท้าย: ฿${money.toLocaleString()}</p>
+                <p class="text-lg mb-2">ประสิทธิภาพการทำงาน: ${efficiency}%</p>
+                <p class="text-lg mb-4">ความสูญเปล่ารวม: ${Object.values(wastesStatus).reduce((sum, current) => sum + current, 0)} หน่วย</p>
+                <p class="text-base">
+                    <b>ผู้ชนะคือ:</b> ผู้ที่มีเงินทุนเหลือมากที่สุด, ประสิทธิภาพการทำงานสูงที่สุด, และความสูญเปล่ารวมน้อยที่สุด!
+                </p>
+                <p class="text-sm mt-2 font-bold text-green-600">คะแนนของคุณถูกบันทึกลงในกระดานคะแนนสูงสุดแล้ว!</p>
+            `;
+
+            showMessageBox(finalMessage, 'info', showSummaryScreen); // Show message, then go to summary
+        }
+
+        // Function to shuffle an array
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]]; // Swap elements
+            }
+            return array;
+        }
+
+        // Start a new round
+        function startRound() {
+            if (currentRound >= maxRounds) {
+                endGame();
+                return;
+            }
+
+            currentRound++;
+            // Add passive income at the start of each round
+            money += 500; // Added passive income
+            updateStatus();
+
+            // Select scenario from shuffled list
+            const currentScenario = shuffledScenarios[currentRound - 1]; // Use currentRound as index
+            scenarioText.textContent = currentScenario.text;
+
+            // Apply initial waste impact for the scenario
+            for (const wasteType in currentScenario.wasteImpact) {
+                wastesStatus[wasteType] = Math.min(100, wastesStatus[wasteType] + currentScenario.wasteImpact[wasteType]);
+            }
+
+            // Clear previous action buttons
+            actionButtonsContainer.innerHTML = '';
+
+            // Create action buttons for the current scenario
+            currentScenario.actions.forEach(action => {
+                const button = document.createElement('button');
+                button.classList.add('action-button');
+                // Add icon
+                if (action.icon) {
+                    const iconElement = document.createElement('i');
+                    iconElement.classList.add(...action.icon.split(' '));
+                    button.appendChild(iconElement);
+                }
+                button.append(action.text); // Use append to add text after icon
+                button.onclick = () => handleAction(action);
+                actionButtonsContainer.appendChild(button);
+            });
+            updateStatus(); // Update status after waste impact
+        }
+
+        // Handle player's action
+        function handleAction(action) {
+            if (money < action.cost) {
+                showMessageBox("เงินทุนไม่พอ! คุณไม่สามารถเลือกการกระทำนี้ได้", "error");
+                return;
+            }
+
+            money += action.effect.money;
+            efficiency += action.effect.efficiency;
+
+            // Apply waste reductions
+            for (const wasteType in action.effect) {
+                if (wastesStatus.hasOwnProperty(wasteType) && wasteType !== 'efficiency' && wasteType !== 'money') {
+                    wastesStatus[wasteType] = Math.max(0, Math.min(100, wastesStatus[wasteType] + action.effect[wasteType])); // Ensure waste stays between 0 and 100
+                }
+            }
+
+            // Cap efficiency between 0 and 100
+            efficiency = Math.max(0, Math.min(100, efficiency));
+
+            updateStatus();
+            showMessageBox(`${action.outcome}`, 'info', startRound); // Removed redundant info from outcome, now in scenario text
+        }
+
+        // Initialize game state (reset to defaults)
+        function initializeGame() {
+            // Access isAuthReady from the global window object
+            if (!window.isAuthReady) {
+                showMessageBox("กำลังเชื่อมต่อฐานข้อมูล กรุณารอสักครู่...", "info");
+                return;
+            }
+
+            currentPlayerName = playerNameInput.value.trim();
+            if (!currentPlayerName) {
+                currentPlayerName = "ผู้เล่นไม่ระบุชื่อ";
+            }
+
+            currentRound = 0;
+            money = 25000; // Starting money increased to 25,000
+            efficiency = 50; // Starting efficiency
+
+            // Initialize all wastes to a default level (e.g., 50)
+            for (const key in wastes) {
+                wastesStatus[key] = 50;
+            }
+
+            // Shuffle scenarios for the new game
+            shuffledScenarios = shuffleArray([...allScenarios]); // Create a copy before shuffling
+
+            window.gameStarted = true; // Update the global gameStarted
+            hideAllScreens();
+            gameScreen.classList.remove('hidden');
+            updateStatus();
+            hideMessageBox();
+            startRound(); // Start the first round
+        }
+
+        function hideAllScreens() {
+            startScreen.classList.add('hidden');
+            gameScreen.classList.add('hidden');
+            scoreboardScreen.classList.add('hidden');
+            summaryScreen.classList.add('hidden'); // Hide summary screen
+            resetButton.classList.add('hidden');
+        }
+
+        function showStartScreen() {
+            hideAllScreens();
+            startScreen.classList.remove('hidden');
+            playerNameInput.value = ""; // Clear player name input
+            // Reset scenario text to initial instruction
+            scenarioText.textContent = "กด 'เริ่มเกม' เพื่อเริ่มต้นการเป็นผู้บริหารไร้ความสูญเปล่า!";
+            if (backgroundMusic.paused) {
+                audioIcon.classList.remove('fa-volume-mute');
+                audioIcon.classList.add('fa-volume-up');
+            }
+        }
+
+        function showScoreboard() {
+            hideAllScreens();
+            scoreboardScreen.classList.remove('hidden');
+            displayScores();
+        }
+
+        // Audio control logic
+        let isMuted = false;
+        audioControl.addEventListener('click', () => {
+            if (backgroundMusic.paused) {
+                backgroundMusic.play().catch(e => console.error("Autoplay failed:", e));
+                audioIcon.classList.remove('fa-volume-mute');
+                audioIcon.classList.add('fa-volume-up');
+                isMuted = false;
+            } else {
+                backgroundMusic.pause();
+                audioIcon.classList.remove('fa-volume-up');
+                audioIcon.classList.add('fa-volume-mute');
+                isMuted = true;
+            }
+        });
+
+        // Try to play music automatically when the page loads (might be blocked by browsers)
+        window.addEventListener('load', () => {
+            backgroundMusic.volume = 0.3; // Set a default volume
+            // Attempt to play, but handle potential autoplay policy issues
+            backgroundMusic.play().catch(e => {
+                console.log("Autoplay blocked. User interaction needed to play music.");
+                // Update icon to muted if autoplay is blocked
+                audioIcon.classList.remove('fa-volume-up');
+                audioIcon.classList.add('fa-volume-mute');
+                isMuted = true;
+            });
+
+            // Initialize Firebase and Auth when the window loads
+            window.initFirebaseAndAuth().then(() => {
+                loadingOverlay.style.display = 'none'; // Hide loading overlay
+                // Enable buttons after Firebase is ready
+                startButton.disabled = false;
+                playerNameInput.disabled = false;
+                showScoresButton.disabled = false;
+            }).catch(error => {
+                console.error("Failed to initialize Firebase:", error);
+                loadingOverlay.style.display = 'none'; // Hide loading overlay even on error
+                showMessageBox("ไม่สามารถเชื่อมต่อฐานข้อมูลได้: " + error.message, "error");
+            });
+        });
+
+
+        // Event listeners
+        startButton.addEventListener('click', initializeGame);
+        showScoresButton.addEventListener('click', showScoreboard);
+        backToStartButton.addEventListener('click', showStartScreen);
+        resetButton.addEventListener('click', initializeGame); // This button is for game restart after end game
+        showScoresFromSummaryButton.addEventListener('click', showScoreboard); // New button for summary screen
+
+        // Initial display
+        maxRoundsDisplay.textContent = maxRounds;
+        showStartScreen(); // Show start screen on load
+    </script>
+</body>
+</html>
